@@ -12,14 +12,14 @@
     },
     "upload": {
       "protocol": "https",
-      "host": "api.bfban.com",
-      "frontend_host": "bfban.com",
+      "host": "ban.alongsir.cn",
+      "frontend_host": "ban.alongsir.cn",
       "pathname": "/api/"
     },
     "production": {
       "protocol": "https",
-      "host": "api.bfban.com",
-      "frontend_host": "bfban.com",
+      "host": "ban.alongsir.cn",
+      "frontend_host": "ban.alongsir.cn",
       "pathname": "/api/"
     },
     "staging": {
