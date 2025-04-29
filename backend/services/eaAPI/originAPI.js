@@ -62,29 +62,41 @@ class OriginClient {
 
     /** @returns {Promise<{access_token:string, expires_in:number}> */
     async getSelfAccessToken() {
-        const url = 'https://accounts.ea.com/connect/auth?client_id=ORIGIN_JS_SDK&response_type=token&redirect_uri=nucleus:rest&prompt=none&release_type=prod';
+        const url = 'https://accounts.ea.com/connect/auth?client_id=EAX-JUNO-SPA&response_type=token&redirect_uri=https://pc.ea.com&prompt=none&release_type=prod';
         const t_start = Date.now();
         try {
             const response = await got.get(url, {
                 headers: {
-                    'Upgrade-Insecure-Requests': 1,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
+                    'Upgrade-Insecure-Requests': '1',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        + 'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        + 'Chrome/91.0.4472.114 Safari/537.36',
                     'Cookie': `sid=${this.cookies.sid}; remid=${this.cookies.remid}`
                 },
-            }).json();
+                followRedirect: false,     // ← 不跟随 302/301
+                throwHttpErrors: false,    // ← 不把非 2xx 当成异常抛出
+            });
             
             if(response.error_code == "login_required") {
                 this.cur_state = 'COOKIE_EXPIRED';
                 throw new EaApiError(401, response, `${this.tag} Cookies Expired`);
             } else if(response.error)
                 throw new EaApiError(500, response, `${this.tag} Bad Response`);
-            
-            this.tokens.access_token = response.access_token;
-            this.tokens.expires_when = Date.now() + response.expires_in*1000;
+
+            if (!response) return
+            const location = response.headers.location || response.headers.Location;
+            if (!location) {
+                return response.data?.access_token ?? null;
+            }
+            const hash = location.split('#')[1] || '';
+            const params = new URLSearchParams(hash);
+            const ea_token = params.get('access_token');
+            this.tokens.access_token = ea_token;
+            this.tokens.expires_when = Date.now() + params.get('expires_in')*1000;
 
             this.cur_state = 'OK';
-            logger.info('OriginClient.getSelfAccessToken Success:', {access_token: response.access_token, expires_in: response.expires_in});
-            return {access_token: response.access_token, expires_in: response.expires_in};
+            logger.info('OriginClient.getSelfAccessToken Success:', {access_token: ea_token, expires_in: params.get('expires_in')});
+            return {access_token: ea_token, expires_in: params.get('expires_in')};
         } catch(err) { // Handle request error or parse error
             this.cur_state = 'UNKNOWN_ERROR';
             if(err instanceof EaApiError)
@@ -293,30 +305,66 @@ class OriginClient {
 
     /** @returns {Promise<{username:string, personaId:string, userId:string}>} */
     async getInfoByUserId(userId, api_urls=origin_api_urls) {
-        const url = `https://${api_urls[Math.floor(Math.random()*api_urls.length)]}/atom/users?userIds=${userId}`;
+        const url     = 'https://service-aggregation-layer.juno.ea.com/graphql';
         const t_start = Date.now();
-        try {
-            await this.checkSelfTokenValid(true);
-            const response = await got.get(url, {
-                headers: {
-                    'authtoken': `${this.tokens.access_token}`,
-                    'Upgrade-Insecure-Requests': 1,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
-                }
-            });
-            const xmlres = new xmldom.DOMParser().parseFromString(response.body);
-            const username = xpath.select1('string(/users[1]/user[1]/EAID[1])', xmlres);
-            const personaId = xpath.select1('string(/users[1]/user[1]/personaId[1])', xmlres);
-            const userId = xpath.select1('string(/users[1]/user[1]/userId[1])', xmlres);
 
-            if(!username) {
-                if(xpath.select1('/users', xmlres))
-                    throw new EaApiError(404, response, `${this.tag} Not Found`);
-                else
-                    throw new EaApiError(500, response, `${this.tag} Bad Response`);
+        // 确保 userId 是数字或数字字符串
+        const pd = Number(userId);
+        if (!Number.isFinite(pd)) {
+            throw new EaApiError(500, null, `[${this.tag}] GraphQL error`);
+        }
+        try {
+            // 确保 token 有效
+            await this.checkSelfTokenValid(true);
+
+            // 直接在 query 文本里插入数字 pd
+            const query = `
+      query {
+        playerByPd(pd: ${pd}) {
+          displayName
+          pd
+          psd
+          uniqueName
+          nickname
+        }
+      }
+    `;
+
+            const { body } = await got.post(url, {
+                headers: {
+                    'Content-Type':  'application/json',
+                    'Authorization': `Bearer ${this.tokens.access_token}`,
+                    'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                        'Chrome/91.0.4472.114 Safari/537.36'
+                },
+                json: { query },
+                responseType: 'json',
+            });
+
+            // GraphQL 层错误
+            if (body.errors?.length) {
+                throw new EaApiError(500, body.errors, `[${this.tag}] GraphQL error`);
             }
 
-            return { username, personaId, userId };
+            const player = body.data?.playerByPd;
+            if (!player || typeof player !== 'object') {
+                throw new EaApiError(404, null, `[${this.tag}] Player ${pd} Not Found`);
+            }
+
+            const username  = player.displayName;
+            const personaId = String(player.psd);
+            const returnedPd= player.pd;  // 通常也是字符串或数字
+
+            if (!username) {
+                throw new EaApiError(404, null, `[${this.tag}] Player ${pd} has no displayName`);
+            }
+
+            return {
+                username,
+                personaId,
+                userId: String(returnedPd)
+            };
         } catch(err) {
             if(err instanceof EaApiError)
                 throw err;
@@ -334,26 +382,59 @@ class OriginClient {
     /** @returns {Promise<string>} */
     async getUserAvatar(userId, api_urls=origin_api_urls) {
         const t_start = Date.now();
-        const url = `https://${api_urls[Math.floor(Math.random()*api_urls.length)]}/avatar/user/${userId}/avatars?size=1`;
-        const patten = /<link>(https?:\/\/[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|])<\/link>/
+        const url = 'https://service-aggregation-layer.juno.ea.com/graphql';
+        const pd = Number(userId);
+        if (!Number.isFinite(pd)) {
+            throw new EaApiError(500, null, `${this.tag} Bad Response`);
+        }
         try {
             await this.checkSelfTokenValid(true);
-            const response = await got.get(url, {
-                throwHttpErrors: true,
-                headers: {
-                    'authtoken': `${this.tokens.access_token}`,
-                    'Upgrade-Insecure-Requests': 1,
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36',
-                }
-            });
-            const link = patten.exec(response.body);
-            if(link)
-                return link[1];
+            const query = `
+      query {
+        playerByPd(pd: ${pd}) {
+          displayName
+          pd
+          psd
+          avatar {
+            medium {
+                path
+            }
+          }
+        }
+      }
+    `;
 
-            if(response.body.includes('<users/>'))
-                throw new EaApiError(404, response, `${this.tag} Not Found`);
-            else
-                throw new EaApiError(500, response, `${this.tag} Bad Response`);
+            const { body } = await got.post(url, {
+                headers: {
+                    'Content-Type':  'application/json',
+                    'Authorization': `Bearer ${this.tokens.access_token}`,
+                    'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                        'Chrome/91.0.4472.114 Safari/537.36'
+                },
+                json: { query },
+                responseType: 'json',
+            });
+
+            // GraphQL 层错误
+            if (body.errors?.length) {
+                throw new EaApiError(500, body.errors, `[${this.tag}] GraphQL error`);
+            }
+
+            const player = body.data?.playerByPd;
+            if (!player || typeof player !== 'object') {
+                throw new EaApiError(404, null, `[${this.tag}] Player ${pd} Not Found`);
+            }
+
+            const username  = player.displayName;
+            const personaId = String(player.psd);
+            const link= player.avatar.medium.path;  // 通常也是字符串或数字
+
+            if(link)
+                return link;
+            else {
+                throw new EaApiError(404, null, `${this.tag} Not Found`);
+            }
         } catch(err) {
             if(err instanceof EaApiError)
                 throw err;
