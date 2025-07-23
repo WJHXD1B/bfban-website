@@ -36,7 +36,7 @@
                 </FormItem>
 
                 <FormItem :label="$t('captcha.title')" prop="captcha">
-                  <Captcha ref="captcha" size="large" @getCaptchaData="getCaptchaData"></Captcha>
+                  <Captcha ref="captcha" size="large" type="svg" @getCaptchaData="getCaptchaData"></Captcha>
                 </FormItem>
 
                 <br>
