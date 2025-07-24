@@ -394,7 +394,7 @@
                       <div class="ivu-card-body">
                         <Row :gutter="10">
                           <Col :xs="{span: 14}" :lg="{span: 12}">
-                            <Captcha ref="captcha" size="large"
+                            <Captcha ref="captcha" size="large" type="svg"
                                      @getCaptchaData="(value) => getCaptchaData('captcha',value)"></Captcha>
                           </Col>
                           <Col :xs="{span: 10, push: 0}" :lg="{span: 12, push: 0}">
